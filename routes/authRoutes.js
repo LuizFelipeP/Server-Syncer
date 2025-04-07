@@ -75,6 +75,38 @@ router.post("/register", async (req, res) => {
 });
 
 
+// Rota para editar informações do usuário
+router.put("/update-user", async (req, res) => {
+  const { userId, nome, email, senha } = req.body;
+
+  if (!userId || !nome || !email) {
+    return res.status(400).json({ error: "Campos obrigatórios ausentes." });
+  }
+
+  try {
+    let query = "UPDATE users SET nome = $1, email = $2";
+    const params = [nome, email];
+
+    // Se o usuário quiser atualizar a senha também
+    if (senha) {
+      const hashedPassword = await bcrypt.hash(senha, 10);
+      query += ", senha = $3 WHERE id = $4";
+      params.push(hashedPassword, userId);
+    } else {
+      query += " WHERE id = $3";
+      params.push(userId);
+    }
+
+    await pool.query(query, params);
+
+    res.json({ message: "Informações atualizadas com sucesso!" });
+  } catch (error) {
+    console.error("Erro ao atualizar usuário:", error);
+    res.status(500).json({ error: "Erro interno do servidor." });
+  }
+});
+
+
 
 
 export default router;
