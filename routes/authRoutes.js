@@ -43,28 +43,43 @@ router.post("/login", async (req, res) => {
 
 // Rota de Registro
 router.post("/register", async (req, res) => {
-  const { email, username, password } = req.body;
+  const { email, username, password, familia } = req.body;
 
-  // Validação simples de dados
-  if (!email || !username || !password) {
+  if (!email || !username || !password || !familia) {
     return res.status(400).json({ error: "Todos os campos são obrigatórios!" });
   }
 
   try {
     // Verificar se o email já está registrado
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+    const userResult = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
 
-    if (result.rows.length > 0) {
+    if (userResult.rows.length > 0) {
       return res.status(409).json({ error: "Email já registrado!" });
+    }
+
+    // Verificar se a família já existe
+    let familiaResult = await pool.query("SELECT id FROM familias WHERE nome = $1", [familia]);
+    let familiaId;
+
+    if (familiaResult.rows.length === 0) {
+      // Se não existe, cria uma nova família
+      const novaFamilia = await pool.query(
+          "INSERT INTO familias (nome) VALUES ($1) RETURNING id",
+          [familia]
+      );
+      familiaId = novaFamilia.rows[0].id;
+    } else {
+      // Se já existe, pega o id dela
+      familiaId = familiaResult.rows[0].id;
     }
 
     // Criptografar a senha
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Inserir o novo usuário no banco de dados
+    // Inserir o novo usuário já atrelado à família
     await pool.query(
-        "INSERT INTO users (nome, email, senha) VALUES ($1, $2, $3)",
-        [username, email, hashedPassword]
+        "INSERT INTO users (nome, email, senha, familia_id) VALUES ($1, $2, $3, $4)",
+        [username, email, hashedPassword, familiaId]
     );
 
     res.status(201).json({ message: "Usuário registrado com sucesso!" });
@@ -73,6 +88,7 @@ router.post("/register", async (req, res) => {
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
+
 
 
 // Rota para editar informações do usuário

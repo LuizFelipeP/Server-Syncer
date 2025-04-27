@@ -42,40 +42,26 @@ app.use("/api/auth", authRoutes); // Adiciona a rota de autenticação
 
 // Rota para sincronizar gastos usando Yjs
 app.post("/api/sync", async (req, res) => {
-  const { stateVector } = req.body;
+  const { stateVector, familiaId } = req.body;
 
-  if (!stateVector) {
-    return res.status(400).json({ error: "stateVector não fornecido." });
+  if (!stateVector || !familiaId) {
+    return res.status(400).json({ error: "stateVector ou familiaId não fornecido." });
   }
 
   try {
-    console.log("📥 Recebendo stateVector do cliente:", stateVector);
-
-    // Converter Base64 para Uint8Array corretamente
     const clientVector = new Uint8Array(Buffer.from(stateVector, "base64"));
-
-    // Criar um novo documento Yjs
     let yjsDoc = new Y.Doc();
 
-    // Buscar estado salvo no banco
-    const result = await pool.query("SELECT yjs_updates FROM yjs_state WHERE id = 1");
+    const result = await pool.query("SELECT yjs_updates FROM yjs_state WHERE familia_id = $1", [familiaId]);
 
     if (result.rows.length > 0) {
       const storedUpdates = result.rows[0].yjs_updates;
-      if (storedUpdates && storedUpdates.length > 0) {
-        console.log("📄 Aplicando updates salvos do banco");
-        storedUpdates.forEach((update) => {
-          Y.applyUpdate(yjsDoc, new Uint8Array(update));
-        });
-      }
-    } else {
-      console.log("⚠️ Nenhum estado encontrado no banco.");
+      storedUpdates.forEach((update) => {
+        Y.applyUpdate(yjsDoc, new Uint8Array(update));
+      });
     }
 
-    // Gerar apenas as mudanças que faltam para o cliente
     const missingUpdates = Y.encodeStateAsUpdate(yjsDoc, clientVector);
-
-    console.log("📤 Enviando updates para o cliente:", missingUpdates);
 
     res.json({ success: true, update: Buffer.from(missingUpdates).toString("base64") });
   } catch (error) {
@@ -84,25 +70,24 @@ app.post("/api/sync", async (req, res) => {
   }
 });
 
+
 // Salvar updates recebidos do cliente
 app.post("/api/update", async (req, res) => {
-  const { update } = req.body;
+  const { update, familiaId } = req.body;
 
-  if (!update) {
-    return res.status(400).json({ error: "Nenhum update recebido." });
+  if (!update || !familiaId) {
+    return res.status(400).json({ error: "update ou familiaId não fornecido." });
   }
 
   try {
-    console.log("📥 Recebendo update do cliente:", update);
-
     const updateBuffer = new Uint8Array(Buffer.from(update, "base64"));
 
-    // Salvar incrementalmente no banco
     await pool.query(
-        `INSERT INTO yjs_state (id, yjs_updates) 
-       VALUES (1, ARRAY[$1]::bytea[]) 
-       ON CONFLICT (id) DO UPDATE SET yjs_updates = array_append(yjs_state.yjs_updates, $1)`,
-        [Buffer.from(updateBuffer)]
+        `INSERT INTO yjs_state (familia_id, yjs_updates) 
+       VALUES ($1, ARRAY[$2]::bytea[]) 
+       ON CONFLICT (familia_id) DO UPDATE 
+       SET yjs_updates = array_append(yjs_state.yjs_updates, $2)`,
+        [familiaId, Buffer.from(updateBuffer)]
     );
 
     res.json({ success: true });
@@ -114,6 +99,7 @@ app.post("/api/update", async (req, res) => {
 
 
 
+
 app.get('/api/user', async (req, res) => {
   try {
     const userId = parseInt(req.query.id, 10);  // Supondo que o ID do usuário venha da query string
@@ -121,7 +107,7 @@ app.get('/api/user', async (req, res) => {
       return res.status(400).json({ error: "ID do usuário não fornecido" });
     }
 
-    const result = await pool.query("SELECT id, nome, email FROM users WHERE id = $1", [userId]);
+    const result = await pool.query("SELECT id, nome, email, familia_id FROM users WHERE id = $1", [userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Usuário não encontrado" });
