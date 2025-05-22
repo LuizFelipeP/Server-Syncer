@@ -41,53 +41,74 @@ app.use("/api/auth", authRoutes); // Adiciona a rota de autenticação
 
 
 // Rota para sincronizar gastos usando Yjs
+// 🔁 Rota de sincronização Yjs
+// Nova rota bulk-sync
 app.post("/api/sync", async (req, res) => {
-  const { stateVector, familiaId } = req.body;
-
-  if (!stateVector || !familiaId) {
-    return res.status(400).json({ error: "stateVector ou familiaId não fornecido." });
+  const { familiaId, stateVectors } = req.body;
+  if (!familiaId || typeof stateVectors !== "object") {
+    return res
+        .status(400)
+        .json({ error: "familiaId ou stateVectors inválido." });
   }
-
   try {
-    const clientVector = new Uint8Array(Buffer.from(stateVector, "base64"));
-    let yjsDoc = new Y.Doc();
+    // 1) Pega todos os docs dessa família
+    const { rows } = await pool.query(
+        `SELECT doc_key, yjs_updates FROM yjs_state WHERE familia_id = $1`,
+        [familiaId]
+    );
 
-    const result = await pool.query("SELECT yjs_updates FROM yjs_state WHERE familia_id = $1", [familiaId]);
+    const updatesOut = {};
 
-    if (result.rows.length > 0) {
-      const storedUpdates = result.rows[0].yjs_updates;
-      storedUpdates.forEach((update) => {
-        Y.applyUpdate(yjsDoc, new Uint8Array(update));
-      });
+    // 2) Para cada documento (gasto)
+    for (const { doc_key: gastoId, yjs_updates } of rows) {
+      const doc = new Y.Doc();
+      // Aplica os updates já salvos
+      for (const updBuffer of yjs_updates) {
+        Y.applyUpdate(doc, new Uint8Array(updBuffer));
+      }
+
+      // 3) Faz diff vs. stateVector do cliente
+      const clientSVb64 = stateVectors[gastoId];
+      const clientSV = clientSVb64
+          ? new Uint8Array(Buffer.from(clientSVb64, "base64"))
+          : undefined;
+      const diff = clientSV
+          ? Y.encodeStateAsUpdate(doc, clientSV)
+          : Y.encodeStateAsUpdate(doc);
+
+      // 4) Só retorna se houver algo novo
+      updatesOut[gastoId] = diff.length ? Buffer.from(diff).toString("base64") : null;
     }
 
-    const missingUpdates = Y.encodeStateAsUpdate(yjsDoc, clientVector);
-
-    res.json({ success: true, update: Buffer.from(missingUpdates).toString("base64") });
+    // 5) Envia os diffs em um único objeto
+    return res.json({ updates: updatesOut });
   } catch (error) {
-    console.error("❌ Erro ao sincronizar Yjs:", error);
-    res.status(500).json({ error: "Erro ao sincronizar Yjs." });
+    console.error("❌ Erro ao sincronizar Yjs (bulk):", error);
+    return res.status(500).json({ error: "Erro ao sincronizar Yjs." });
   }
 });
 
 
-// Salvar updates recebidos do cliente
-app.post("/api/update", async (req, res) => {
-  const { update, familiaId } = req.body;
 
-  if (!update || !familiaId) {
-    return res.status(400).json({ error: "update ou familiaId não fornecido." });
+
+
+// 💾 Rota para salvar updates do cliente
+app.post("/api/update", async (req, res) => {
+  const {  gastoId, familiaId, update } = req.body;
+
+  if (!update || !gastoId || !familiaId) {
+    return res.status(400).json({ error: "update, familiaId ou gastoId não fornecido." });
   }
 
   try {
     const updateBuffer = new Uint8Array(Buffer.from(update, "base64"));
 
     await pool.query(
-        `INSERT INTO yjs_state (familia_id, yjs_updates) 
-       VALUES ($1, ARRAY[$2]::bytea[]) 
-       ON CONFLICT (familia_id) DO UPDATE 
-       SET yjs_updates = array_append(yjs_state.yjs_updates, $2)`,
-        [familiaId, Buffer.from(updateBuffer)]
+        `INSERT INTO yjs_state (familia_id, doc_key, yjs_updates)
+         VALUES ($1, $2, ARRAY[$3]::bytea[])
+           ON CONFLICT (familia_id, doc_key)
+       DO UPDATE SET yjs_updates = array_append(yjs_state.yjs_updates, $3)`,
+        [familiaId, gastoId, Buffer.from(updateBuffer)]
     );
 
     res.json({ success: true });
@@ -96,6 +117,8 @@ app.post("/api/update", async (req, res) => {
     res.status(500).json({ error: "Erro ao salvar update." });
   }
 });
+
+
 
 
 
